@@ -9,6 +9,9 @@ __pycache__/
 #VSCODE
 .vscode/
 
+#mpl outputs
+*pyx
+
 # Distribution / packaging
 .Python
 build/
