@@ -8,6 +8,7 @@ if __name__ == "__main__":
 
     # Parse arguments
     import argparse
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--episodes", default=1000, type=int, help="Training episodes.")
     args = parser.parse_args()
@@ -31,8 +32,21 @@ if __name__ == "__main__":
         while not done:
             action = np.random.choice(actions)
             next_state, reward, done, _ = env.step(action)
-            episode.append((state, action, reward))
+            policy_fraction = 2.0 if action in [1, 2] else 0.0
+            episode.append((state, action, reward, policy_fraction))
             state = next_state
+
+        G = 0
+        W = 1
+
+        for state, action, reward, policy_fraction in reversed(episode):
+            if policy_fraction == 0:
+                break
+            G += reward
+            C[state] += W
+            V[state] += W / C[state] * (G - V[state])
+            W*= policy_fraction
+            
 
         # TODO: Update V using weighted importance sampling.
 
