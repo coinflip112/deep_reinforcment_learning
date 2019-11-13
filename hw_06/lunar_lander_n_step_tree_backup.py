@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import numpy as np
-
+import sys
 import lunar_lander_evaluator
 
 
@@ -29,45 +29,61 @@ def decay(current_rate, decay_rate, decay_method):
         new_rate = current_rate
     return new_rate
 
+
 def is_greedy(current_epsilon):
-    is_greedy = np.random.choice([True, False], p=[1 - current_epsilon, current_epsilon])
+    is_greedy = np.random.choice(
+        [True, False], p=[1 - current_epsilon, current_epsilon]
+    )
     return is_greedy
 
+
+def get_policy(state, current_epsilon, Q):
+    probs = np.ones(env.actions, dtype=float) * current_epsilon / (env.actions-1)
+    probs[np.argmax(Q[state][:])] = 1.0 - current_epsilon
+    return probs
+
+
+def get_policy_action(state, current_epsilon, Q):
+    probs = get_policy(state, current_epsilon, Q)
+    chosen_action = np.random.choice(list(range(env.actions)), p=probs)
+    return chosen_action
+
+
 arguments = [
-    {"dest": "--episodes", "default": 5500, "type": int, "help": "Training episodes."},
+    {"dest": "--episodes", "default": 20000, "type": int, "help": "Training episodes."},
     {
         "dest": "--render_each",
         "default": None,
         "type": int,
         "help": "Render some episodes.",
     },
-    {"dest": "--alpha", "default": 0.2, "type": float, "help": "Learning rate."},
+    {"dest": "--alpha", "default": 0.3, "type": float, "help": "Learning rate."},
     {
         "dest": "--alpha_final",
-        "default": 0.1,
+        "default": 0.01,
         "type": float,
         "help": "Final learning rate.",
     },
-    {"dest": "--epsilon", "default": 0.6, "type": float, "help": "Exploration factor."},
+    {"dest": "--epsilon", "default": 0.5, "type": float, "help": "Exploration factor."},
     {
         "dest": "--epsilon_final",
-        "default": 0.00000000001,
+        "default": 0.0001,
         "type": float,
         "help": "Final exploration factor.",
     },
     {
         "dest": "--n_step",
-        "default": 3,
+        "default": 20,
         "type": int,
         "help": "Number of steps to tree backup",
     },
     {
         "dest": "--decay_method",
-        "default": "linear",
+        "default": "exponential",
         "type": str,
         "help": "Learning rate and Epsilon decay",
     },
-    {"dest": "--gamma", "default": 1, "type": float, "help": "Discounting factor."},
+    {"dest": "--gamma", "default": 1.0, "type": float, "help": "Discounting factor."},
 ]
 
 
@@ -100,8 +116,66 @@ if __name__ == "__main__":
     current_epsilon = args.epsilon
 
     Q = np.zeros(shape=(env.states, env.actions))
+    policy = np.array(
+        object=[get_policy(state, current_epsilon, Q) for state in range(env.states)]
+    )
+    # init policy
 
     for episode in range(args.episodes):
+        # Perform a training episode
+        state, done = env.reset(), False
+
+        actions = []
+        states = []
+        rewards = []
+        action = get_policy_action(state, current_epsilon, Q)
+        actions.append(action)
+        states.append(state)
+        rewards.append(0)
+
+        T = np.inf
+        for t in range(sys.maxsize):
+            if args.render_each and env.episode and env.episode % args.render_each == 0:
+                env.render()
+            if t < T:
+                next_state, reward, done, _ = env.step(actions[t])
+                states.append(next_state)
+                rewards.append(reward)
+
+                if done:
+                    T = t + 1
+                else:
+                    action = get_policy_action(states[t + 1], current_epsilon, Q)
+                    actions.append(action)
+
+            tau = t + 1 - args.n_step
+            if tau >= 0:
+                if t + 1 >= T:
+                    G = rewards[T]
+                else:
+                    G = rewards[t + 1] + args.gamma * np.sum(
+                        policy[states[t + 1], :] * Q[states[t + 1], :]
+                    )
+                for k in range(min(t, T - 1), tau, -1):
+                    G = (
+                        rewards[k]
+                        + args.gamma
+                        * np.sum(
+                            [
+                                policy[states[k], a] * Q[states[k], a]
+                                for a in range(env.actions)
+                                if a != states[k]
+                            ]
+                        )
+                        + args.gamma * G * policy[states[k], actions[k]]
+                    )
+
+                Q[states[tau], actions[tau]] += current_alpha * (
+                    G - Q[states[tau], actions[tau]]
+                )
+                policy[states[tau], :] = get_policy(states[tau], current_epsilon, Q)
+            if tau == T - 1:
+                break
         current_alpha = decay(
             current_rate=current_alpha,
             decay_rate=alpha_decay_rate,
@@ -112,45 +186,11 @@ if __name__ == "__main__":
             decay_rate=epsilon_decay_rate,
             decay_method=args.decay_method,
         )
-        
-        # Perform a training episode
-        state, done = env.reset(), False
-        
-        
-        actions = []
-        states = []
-        rewards = []
-        actions.append(action)
-        states.append(state)
-        rewards.append(0)
+    for i in range(100):
+        state, done = env.reset(start_evaluate=True), False
 
-        T = np.inf
-        action = np.random.randint(env.actions)
-        t = 0
-        while True:
-            if args.render_each and env.episode and env.episode % args.render_each == 0:
-                env.render()
-            if t < T:
-                next_state, reward, done, _ = env.step(actions[t])
+        while not done:
+            action = np.argmax(Q[state, :])
 
-                states.append(next_state)
-                rewards.append(reward)
-
-                if done:
-                    T = t + 1
-                else:
-                    new_action = np.random.randint(env.actions)
-                    actions.append(new_action)
-
-            tau  = t + 1 - args.n_step
-            if tau >= 0:
-                if t + 1 >= T:
-                    G = reward[T]
-                else:
-                    G = stored_rewards[t + 1] + args.gamma * np.sum(
-            policy[stored_states[t + 1]][:] * Q[stored_states[t + 1]][:]
-        )           
-
-                    G = rewards[t + 1] + args.gamma * 
-
-    # Perform last 100 evaluation episodes
+            next_state, reward, done, _ = env.step(action)
+            state = next_state
