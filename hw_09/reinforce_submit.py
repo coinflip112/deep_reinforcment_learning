@@ -46,18 +46,20 @@ class Network:
         return self.model.predict(states)
 
     def save(self):
-        self.model.save("reinforce_model.h5")
+        self.model.save("saved_models/reinforce_model.h5")
 
 
 if __name__ == "__main__":
     # Parse arguments
     import argparse
+    import embedded_data
 
+    embedded_data.extract()
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--batch_size", default=64, type=int, help="Number of episodes to train on."
     )
-    parser.add_argument("--episodes", default=1300, type=int, help="Training episodes.")
+    parser.add_argument("--episodes", default=1500, type=int, help="Training episodes.")
     parser.add_argument("--gamma", default=0.98, type=float, help="Discounting factor.")
     parser.add_argument(
         "--hidden_layers", default=3, type=int, help="Number of hidden layers."
@@ -87,53 +89,60 @@ if __name__ == "__main__":
 
     # Construct the network
     network = Network(env, args)
+    model = tf.keras.models.load_model("reinforce_model.h5")
+    network.model = model
+    # # Training
+    # for _ in range(args.episodes // args.batch_size):
+    #     batch_states, batch_actions, batch_returns = [], [], []
+    #     for _ in range(args.batch_size):
+    #         # Perform episode
+    #         states, actions, rewards = [], [], []
+    #         state, done = env.reset(), False
+    #         while not done:
+    #             if (
+    #                 args.render_each
+    #                 and env.episode > 0
+    #                 and env.episode % args.render_each == 0
+    #             ):
+    #                 env.render()
 
-    # Training
-    for _ in range(args.episodes // args.batch_size):
-        batch_states, batch_actions, batch_returns = [], [], []
-        for _ in range(args.batch_size):
-            # Perform episode
-            states, actions, rewards = [], [], []
-            state, done = env.reset(), False
-            while not done:
-                if (
-                    args.render_each
-                    and env.episode > 0
-                    and env.episode % args.render_each == 0
-                ):
-                    env.render()
+    #             action_probs = network.predict([state])[0]
 
-                action_probs = network.predict([state])[0]
+    #             action = np.random.choice(list(range(env.actions)), p=action_probs)
+    #             next_state, reward, done, _ = env.step(action)
 
-                action = np.random.choice(list(range(env.actions)), p=action_probs)
-                next_state, reward, done, _ = env.step(action)
+    #             states.append(state)
+    #             actions.append(action)
+    #             rewards.append(reward)
 
-                states.append(state)
-                actions.append(action)
-                rewards.append(reward)
+    #             state = next_state
 
-                state = next_state
+    #         # TODO: Compute returns by summing rewards (with discounting)
 
-            # TODO: Compute returns by summing rewards (with discounting)
+    #         single_return = 0
+    #         returns = []
 
-            single_return = 0
-            returns = []
+    #         for reward in np.flip(rewards):
+    #             single_return = reward + args.gamma * single_return
+    #             returns.append(single_return)
 
-            for reward in np.flip(rewards):
-                single_return = reward + args.gamma * single_return
-                returns.append(single_return)
+    #         batch_states.append(np.array(states))
+    #         batch_actions.append(np.array(actions))
+    #         batch_returns.append(np.flip(returns))
 
-            batch_states.append(np.array(states))
-            batch_actions.append(np.array(actions))
-            batch_returns.append(np.flip(returns))
+    #     # Train using the generated batch
+    #     network.train(batch_states, batch_actions, batch_returns)
 
-        # Train using the generated batch
-        network.train(batch_states, batch_actions, batch_returns)
-    network.save()
     # Final evaluation
-    for _ in range(100):
+    for j in range(100):
         state, done = env.reset(True), False
+        i = 0
         while not done:
-            probabilities = network.predict([state])[0]
-            action = np.argmax(probabilities)
+            i += 1
+            if i >= 490:
+                action = 0
+            else:
+                state = np.array([state]).reshape(1, -1)
+                probabilities = network.model.predict_on_batch(state)[0]
+                action = np.argmax(probabilities)
             state, reward, done, _ = env.step(action)
