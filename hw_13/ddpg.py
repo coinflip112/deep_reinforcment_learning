@@ -123,7 +123,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--batch_size", default=1024, type=int, help="Batch size.")
+    parser.add_argument("--batch_size", default=128, type=int, help="Batch size.")
     parser.add_argument("--env", default="Pendulum-v0", type=str, help="Environment.")
     parser.add_argument(
         "--evaluate_each",
