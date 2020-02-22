@@ -11,33 +11,44 @@ class Network:
     def __init__(self, env, args):
         assert len(env.action_shape) == 1
         action_components = env.action_shape[0]
-        inputs = tf.keras.layers.Input(shape=env.state_shape)
-        x = tf.keras.layers.Dense(args.hidden_layer, activation="relu")(inputs)
-        x = tf.keras.layers.Dense(int(args.hidden_layer / 2), activation="relu")(x)
-        output = tf.keras.layers.Dense(action_components, activation="tanh")(x)
-        self._actor = tf.keras.models.Model(inputs=[inputs], outputs=[output])
+        inputs_actor = tf.keras.layers.Input(shape=env.state_shape)
+        hidden_actor = tf.keras.layers.Dense(args.hidden_layer, activation="relu")(
+            inputs_actor
+        )
+        hidden_actor = tf.keras.layers.Dense(
+            int(args.hidden_layer / 2), activation="relu"
+        )(hidden_actor)
+        output_actor = tf.keras.layers.Dense(action_components, activation="tanh")(
+            hidden_actor
+        )
+        self._actor = tf.keras.models.Model(
+            inputs=[inputs_actor], outputs=[output_actor]
+        )
+        self.actor_opt = tf.keras.optimizers.Adam(learning_rate=args.learning_rate)
         self._actor.compile(
-            optimizer=tf.keras.optimizers.Adam(learning_rate=args.learning_rate / 10),
-            loss="mse",
+            optimizer=self.actor_opt,
+            loss=tf.losses.MeanSquaredError(),
             experimental_run_tf_function=False,
         )
 
         self._target_actor = tf.keras.models.clone_model(self._actor)
 
-        input_actions = tf.keras.layers.Input(shape=4)
-        x = tf.keras.layers.Dense(args.hidden_layer, activation="relu")(inputs)
-        x = tf.keras.layers.Concatenate()([x, input_actions])
-        x = tf.keras.layers.Dense(args.hidden_layer, activation="relu")(x)
-        x = tf.keras.layers.Dense(int(args.hidden_layer / 2), activation="relu")(x)
-        x = tf.keras.layers.Dense(args.hidden_layer, activation="relu")(x)
-        output_critic = tf.keras.layers.Dense(1, activation=None)(x)
+        inputs_critic = tf.keras.layers.Input(shape=4)
+        hidden_critic = tf.keras.layers.Dense(args.hidden_layer, activation="relu")(
+            inputs_critic
+        )
+        hidden_critic = tf.keras.layers.Concatenate()([inputs_actor, hidden_critic])
+        hidden_critic = tf.keras.layers.Dense(
+            int(args.hidden_layer / 2), activation="relu"
+        )(hidden_critic)
+        output_critic = tf.keras.layers.Dense(1, activation=None)(hidden_critic)
 
         self._critic = tf.keras.models.Model(
-            inputs=[inputs, input_actions], outputs=output_critic
+            inputs=[inputs_actor, inputs_critic], outputs=output_critic
         )
         self._critic.compile(
-            loss="mse",
-            optimizer=tf.keras.optimizers.Adam(learning_rate=3e-4),
+            loss=tf.losses.MeanSquaredError(),
+            optimizer=tf.keras.optimizers.Adam(learning_rate=args.learning_rate),
             experimental_run_tf_function=False,
         )
 
@@ -47,12 +58,16 @@ class Network:
     @tf.function
     def _train(self, states, actions, returns):
         with tf.GradientTape() as tape:
-            actions = self._actor(states, training=True)
-            values = self._critic((states, actions), training=False)[:, 0]
-            loss = -tf.math.reduce_mean(values)
+            actions = self._actor(states)
+            tape.watch(actions)
+            q_values = self._critic([states, actions])
+        dq_da = tape.gradient(q_values, actions)
 
-        actor_grads = tape.gradient(loss, self._actor.variables)
-        self._actor.optimizer.apply_gradients(zip(actor_grads, self._actor.variables))
+        with tf.GradientTape() as tape:
+            actions = self._actor(states)
+            theta = self._actor.trainable_variables
+        da_dtheta = tape.gradient(actions, theta, output_gradients=-dq_da)
+        self.actor_opt.apply_gradients(zip(da_dtheta, self._actor.trainable_variables))
 
     def train(self, states, actions, returns):
         states, actions, returns = (
@@ -121,40 +136,40 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--evaluate_each",
-        default=50,
+        default=100,
         type=int,
         help="Evaluate each number of episodes.",
     )
     parser.add_argument(
-        "--evaluate_for", default=10, type=int, help="Evaluate for number of batches."
+        "--evaluate_for", default=50, type=int, help="Evaluate for number of batches."
     )
     parser.add_argument(
-        "--noise_sigma", default=0.2, type=float, help="UB noise sigma."
+        "--noise_sigma", default=0.3, type=float, help="UB noise sigma."
     )
     parser.add_argument(
-        "--noise_theta", default=0.15, type=float, help="UB noise theta."
+        "--noise_theta", default=0.2, type=float, help="UB noise theta."
     )
     parser.add_argument("--gamma", default=0.99, type=float, help="Discounting factor.")
     parser.add_argument(
-        "--hidden_layer", default=50, type=int, help="Size of hidden layer."
+        "--hidden_layer", default=256, type=int, help="Size of hidden layer."
     )
     parser.add_argument(
-        "--learning_rate", default=1e-3, type=float, help="Learning rate."
+        "--learning_rate", default=0.001, type=float, help="Learning rate."
     )
     parser.add_argument(
-        "--render_each", default=None, type=int, help="Render some episodes."
+        "--render_each", default=100, type=int, help="Render some episodes."
     )
     parser.add_argument(
-        "--target_tau", default=1e-3, type=float, help="Target network update weight."
+        "--target_tau", default=0.005, type=float, help="Target network update weight."
     )
     parser.add_argument(
-        "--threads", default=4, type=int, help="Maximum number of threads to use."
+        "--threads", default=8, type=int, help="Maximum number of threads to use."
     )
     args = parser.parse_args()
 
     # Fix random seeds and number of threads
-    np.random.seed(42)
-    tf.random.set_seed(42)
+    np.random.seed(128)
+    tf.random.set_seed(128)
     tf.config.threading.set_inter_op_parallelism_threads(args.threads)
     tf.config.threading.set_intra_op_parallelism_threads(args.threads)
 
@@ -165,9 +180,7 @@ if __name__ == "__main__":
     # Construct the network
     network = Network(env, args)
 
-    # Replay memory; maxlen parameter can be passed to deque for a size limit,
-    # which we however do not need in this simple task.
-    replay_buffer = collections.deque()
+    replay_buffer = collections.deque(maxlen=int(1e6))
     Transition = collections.namedtuple(
         "Transition", ["state", "action", "reward", "done", "next_state"]
     )
@@ -183,9 +196,7 @@ if __name__ == "__main__":
             noise.reset()
             while not done:
                 action = np.clip(
-                    network.predict_actions([state])[0] + noise.sample(),
-                    action_lows,
-                    action_highs,
+                    network.predict_actions([state])[0] + noise.sample(), [-1.0], [1.0]
                 )
                 next_state, reward, done, _ = env.step(action)
 
@@ -194,7 +205,7 @@ if __name__ == "__main__":
                 )
                 state = next_state
 
-                if len(replay_buffer) >= args.batch_size:
+                if len(replay_buffer) >= int(1e4):
                     batch = np.random.choice(
                         len(replay_buffer), size=args.batch_size, replace=False
                     )
@@ -231,7 +242,7 @@ if __name__ == "__main__":
         )
         if np.mean(returns) >= 110:
             training = False
-
+        env._env.close()
     for _ in range(100):
         state, done = env.reset(True), False
         while not done:
