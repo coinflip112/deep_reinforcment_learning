@@ -182,7 +182,7 @@ if __name__ == "__main__":
     from embedded import extract
 
     extract()
-    model_dir = "bipedal_walker_135.932935771506"
+    model_dir = "bipedal_walker_245.49905788070714"
     from pathlib import Path
 
     network._actor = tf.keras.models.load_model(Path(model_dir, "actor.h5"))

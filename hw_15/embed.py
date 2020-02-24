@@ -24,8 +24,8 @@ print("Compressing given paths...", file=sys.stderr, end="")
 tar_data = io.BytesIO()
 with tarfile.open(fileobj=tar_data, mode="w:xz") as tar_file:
     for path in [
-        Path("bipedal_walker_135.932935771506", filename)
-        for filename in os.listdir("bipedal_walker_135.932935771506")
+        Path("bipedal_walker_245.49905788070714", filename)
+        for filename in os.listdir("bipedal_walker_245.49905788070714")
     ]:
         tar_file.add(path)
 print("done.", file=sys.stderr)
