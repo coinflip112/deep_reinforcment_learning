@@ -7,7 +7,7 @@ import numpy as np
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("module", type=str, help="Module to test")
+    parser.add_argument("--module", default="vtrace", type=str, help="Module to test")
     parser.add_argument(
         "--vtrace_data", default="vtrace_test.pickle", type=str, help="Data to test"
     )

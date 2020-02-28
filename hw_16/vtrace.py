@@ -34,9 +34,17 @@ class Network:
         self._actor = tf.keras.models.Model(
             inputs=[inputs_actor], outputs=[output_actor]
         )
+        self._actor_loss_classic = tf.keras.losses.sparse_categorical_crossentropy(
+            output_actor
+        )
+        self._entropy_regularization = tf.reduce_sum(
+            -output_actor * tf.math.log(output_actor), axis=-1
+        )
+        self._actor_loss = self._actor_loss_classic + self._entropy_regularization
+
         self._actor.compile(
             optimizer=tf.keras.optimizers.Adam(learning_rate=args.learning_rate),
-            loss=tf.keras.losses.SparseCategoricalCrossentropy(),
+            loss=self._actor_loss,
             experimental_run_tf_function=False,
         )
 
@@ -87,46 +95,51 @@ class Network:
         #   actor_action_probabilities = actor_probabilities[:, :, actions[:, :]]
 
         is_ratio = actor_action_probabilities / action_probabilities
-        is_ratio = is_ratio[:, actions]
+        # is_ratio = is_ratio[:, actions]
         # TODO: Compute clipped rho-s and c-s, as a Python list with
         # args.n elements, each a tensor (values for a whole batch).
         # The value rhos[i] and cs[i] should be importance sampling
         # ratio for actions[:, i] clipped by `args.clip_rho` and
         # `args.clip_c`, respectively.
-        rhos = np.clip(
+        rhos = np.minimum(
             x1=[is_ratio[:, actions[:, i]] for i in range(actions.shape[1])],
             x2=args.clip_rho,
-            x3=np.infty,
         )
-        cs = np.clip(
+        cs = np.minimum(
             x1=[is_ratio[:, actions[:, i]] for i in range(actions.shape[1])],
             x2=args.clip_c,
-            x3=np.infty,
         )
 
         # TODO: Compute vs from the last one to the first one.
         # The `vs[args.n]` is just `critic_values[:, args.n]`
         # The others can be computed recursively as
-        #   vs[t] = critic_values[:, t] + delta_t V + gamma * cs[t] * (vs[t+1] - critic_values[:, t+1])
+        #   vs[t] = critic_values[:, t] + delta_tV + gamma * cs[t] * (vs[t+1] - critic_values[:, t+1])
 
         vs = [None] * (args.n + 1)
         vs[args.n] = critic_values[:, args.n]
-        for t in range(args.n, 0, -1):
-            delta_t_V = rhos * (
-                rewards + args.gamma * critic_values[:, t + 1] - critic_values[:, t]
+        for s in range(args.n, 0, -1):
+            delta_s_V = rhos * (
+                rewards + args.gamma * critic_values[:, s + 1] - critic_values[:, s]
+                if critic_values[:, s] is not None
+                else 0
             )
-            vs[t] = (
-                critic_values[:, t]
-                + returns
-                + gamma * cs[t] * (vs[t + 1] - critic_values[:, t + 1])
+            vs[s] = (
+                critic_values[:, s]
+                + delta_s_V
+                + args.gamma * cs[s] * (vs[s + 1] - critic_values[:, s + 1])
             )
+        actor_loss_coefficient = rhos[0] * (
+            rewards + args.gamma * vs[1] - critic_values[:, 0]
+        )
+        critic_target = vs[0]
 
         # TODO: Return a pair with following elements:
         # - coefficient for actor loss, i.e., a product of the importance
         #   sampling factor (rhos[0]) and the estimated q_value
         #   (rewards + gamma * vs[1]) minus the baseline of critic_values
         # - target for the critic, i.e., vs[0]
-        return (rhos[0] * (rewards + gamma * vs[1] - critic_values[:, 0]), vs[0])
+
+        return actor_loss_coefficient, critic_target
 
     @tf.function
     def train(self, steps, states, actions, action_probabilities, rewards):
@@ -139,9 +152,8 @@ class Network:
         # if all `states` are non-terminal), so the critic predictions for the
         # states after the `steps` ones must be set to zero.
 
-        critic_results[step:] = 0
+        critic_values[steps:] = 0
 
-        
         # TODO: Run the `vtrace` method, with the last two arguments being the actor
         # and critic predictions, obtaining `actor_weights` and `critic_targets`.
 
@@ -154,13 +166,18 @@ class Network:
             critic_values,
         )
 
+        # TODO obtain the first state of every batch instance
+        states_train = states[0, :]
+
+        self._actor.fit_on_batch(
+            X=states_train, y=critic_targets, sample_weight=actor_weights
+        )
+
         # TODO: Train the actor, using the first state of every batch instance, with
         # - sparse categorical crossentropy loss, weighted by `actor_weights`
         # - plus entropy regularization with weights self.args.entropy_regularization.
         #   Entropy of a given categorical distribution `d` is
         #     tf.reduce_sum(-d * tf.math.log(d), axis=-1)
-
-        
 
         # TODO: Train the critic using the first state of every batch instance,
         # utilizing MSE loss with `critic_targets` as gold values.
