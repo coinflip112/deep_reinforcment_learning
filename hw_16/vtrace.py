@@ -7,6 +7,12 @@ import tensorflow as tf
 import gym_evaluator
 
 
+def sparse_categorical_crossentropy(y_true, y_pred):
+    crossentropy = tf.keras.losses.sparse_categorical_crossentropy(y_true, y_pred)
+    entropy_regularization = tf.reduce_sum(-y_pred * tf.math.log(y_pred), axis=-1)
+    return crossentropy + entropy_regularization
+
+
 class Network:
     def __init__(self, env, args):
         # Store the arguments regularization
@@ -34,13 +40,8 @@ class Network:
         self._actor = tf.keras.models.Model(
             inputs=[inputs_actor], outputs=[output_actor]
         )
-        self._actor_loss_classic = tf.keras.losses.sparse_categorical_crossentropy(
-            output_actor
-        )
-        self._entropy_regularization = tf.reduce_sum(
-            -output_actor * tf.math.log(output_actor), axis=-1
-        )
-        self._actor_loss = self._actor_loss_classic + self._entropy_regularization
+
+        self._actor_loss = sparse_categorical_crossentropy
 
         self._actor.compile(
             optimizer=tf.keras.optimizers.Adam(learning_rate=args.learning_rate),
@@ -139,18 +140,17 @@ class Network:
 
         return actor_loss_coefficient.squeeze(), critic_target
 
-    @tf.function
     def train(self, steps, states, actions, action_probabilities, rewards):
-        pass
         # TODO: Run the actor on first `args.n` states and the critic on `args.n+1` states
-        actor_probabilities = self._actor(states[:, args.n])
-        critic_values = self._critic(states[:, args.n + 1])
+        actor_probabilities = self._actor(states[:, : args.n])
+        critic_values = self._critic(states[:, : args.n + 1])
 
         # TODO: Only first `steps` of `states` are valid (so `steps` might be `args.n+1`
         # if all `states` are non-terminal), so the critic predictions for the
         # states after the `steps` ones must be set to zero.
+        critic_values = critic_values.numpy()
 
-        critic_values[steps:] = 0
+        critic_values[steps:] = [0.0]
 
         # TODO: Run the `vtrace` method, with the last two arguments being the actor
         # and critic predictions, obtaining `actor_weights` and `critic_targets`.
@@ -195,10 +195,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--batch_size",
-        default=128,
-        type=int,
-        help="Number of transitions to train on.",
+        "--batch_size", default=128, type=int, help="Number of transitions to train on."
     )
     parser.add_argument(
         "--clip_c", default=1.0, type=float, help="Clip value for c in V-trace."
@@ -233,7 +230,10 @@ if __name__ == "__main__":
         "--n", default=5, type=int, help="Number of steps to use in V-trace."
     )
     parser.add_argument(
-        "--replay_buffer_maxlen", default=int(1e6), type=int, help="Replay buffer maxlen."
+        "--replay_buffer_maxlen",
+        default=int(1e6),
+        type=int,
+        help="Replay buffer maxlen.",
     )
     parser.add_argument(
         "--render_each", default=0, type=int, help="Render some episodes."
@@ -242,7 +242,7 @@ if __name__ == "__main__":
         "--target_return", default=495, type=float, help="Target return."
     )
     parser.add_argument(
-        "--threads", default=1, type=int, help="Maximum number of threads to use."
+        "--threads", default=4, type=int, help="Maximum number of threads to use."
     )
     args = parser.parse_args()
 
@@ -309,29 +309,6 @@ if __name__ == "__main__":
                     rewards = np.zeros((args.batch_size, args.n), dtype=np.float32)
 
                     # TODO: Prepare a batch.
-                    batch = np.random.choice(
-                        len(replay_buffer), size=args.batch_size, replace=False
-                    )
-                    batch = batch[: -args.n]
-
-                    states, actions, action_probabilities, rewards, dones = zip(
-                        *[replay_buffer[i] for i in batch]
-                    )
-                    steps = [
-                        args.n + 1 if not done else len(state)
-                        for done, state in zip(dones, states)
-                    ]
-                    states = []
-                    predicted = network.predict_values(next_states)
-                    returns = rewards + args.gamma * np.array(
-                        [
-                            (predicted[idx] if not dones[idx] else 0)
-                            for idx in range(args.batch_size)
-                        ]
-                    )
-                    network.train(states, actions, returns)
-
-                    #
                     # Each batch instance is a sequence of `args.n+1` consecutive `states` and
                     # `args.n` consecutive `actions`, `action_probabilities` and `rewards`.
                     # The `steps` indicate how many `states` in range [1,2,...,args.n+1] are valid.
@@ -343,6 +320,24 @@ if __name__ == "__main__":
                     # set to `args.n+1`. If `done` is set, only a subset of states, actions,
                     # action_probabilities and rewards are set, and `steps` is set to the
                     # number of valid states (<`args.n+1`).
+
+                    for n in range(args.n):
+                        batch = np.random.choice(
+                            len(replay_buffer), size=args.batch_size, replace=False
+                        )
+                        states_batch, actions_batch, action_probabilities_batch, rewards_batch, dones_batch = zip(
+                            *[replay_buffer[i] for i in batch]
+                        )
+                        states[:, n, :] = states_batch
+                        actions[:, n] = actions_batch
+                        action_probabilities[:, n] = action_probabilities_batch
+                        rewards[:, n] = rewards_batch
+
+                    try:
+                        steps[n] = list(dones_batch).index(True)
+                    except:
+                        steps[n] = args.n + 1
+
                     network.train(steps, states, actions, action_probabilities, rewards)
 
         # Periodic evaluation
