@@ -88,13 +88,16 @@ class Network:
               guaranteed to be 0 for states after episode termination
         """
 
-        actor_action_probabilities = actor_probabilities[:, :, actions[:, :]]
-
         # TODO: Compute target policy probability of given actions
         # into `actor_action_probabilities`, i.e., symbolically
         #   actor_action_probabilities = actor_probabilities[:, :, actions[:, :]]
+        actions_oh = np.eye(actions.max() + 1)[actions].astype(np.bool)
+        actor_action_probabilities = actor_probabilities[actions_oh].reshape(
+            actions.shape
+        )
 
         is_ratio = actor_action_probabilities / action_probabilities
+
         # is_ratio = is_ratio[:, actions]
         # TODO: Compute clipped rho-s and c-s, as a Python list with
         # args.n elements, each a tensor (values for a whole batch).
@@ -102,13 +105,9 @@ class Network:
         # ratio for actions[:, i] clipped by `args.clip_rho` and
         # `args.clip_c`, respectively.
         rhos = np.minimum(
-            x1=[is_ratio[:, actions[:, i]] for i in range(actions.shape[1])],
-            x2=args.clip_rho,
+            [is_ratio[:, i] for i in range(actions.shape[1])], args.clip_rho
         )
-        cs = np.minimum(
-            x1=[is_ratio[:, actions[:, i]] for i in range(actions.shape[1])],
-            x2=args.clip_c,
-        )
+        cs = np.minimum([is_ratio[:, i] for i in range(actions.shape[1])], args.clip_c)
 
         # TODO: Compute vs from the last one to the first one.
         # The `vs[args.n]` is just `critic_values[:, args.n]`
@@ -117,29 +116,28 @@ class Network:
 
         vs = [None] * (args.n + 1)
         vs[args.n] = critic_values[:, args.n]
-        for s in range(args.n, 0, -1):
-            delta_s_V = rhos * (
-                rewards + args.gamma * critic_values[:, s + 1] - critic_values[:, s]
-                if critic_values[:, s] is not None
-                else 0
+        for s in range(args.n - 1, -1, -1):
+            delta_s_V = rhos[s] * (
+                rewards[:, s]
+                + args.gamma * critic_values[:, s + 1]
+                - critic_values[:, s]
             )
             vs[s] = (
                 critic_values[:, s]
                 + delta_s_V
                 + args.gamma * cs[s] * (vs[s + 1] - critic_values[:, s + 1])
             )
-        actor_loss_coefficient = rhos[0] * (
-            rewards + args.gamma * vs[1] - critic_values[:, 0]
-        )
-        critic_target = vs[0]
-
         # TODO: Return a pair with following elements:
         # - coefficient for actor loss, i.e., a product of the importance
         #   sampling factor (rhos[0]) and the estimated q_value
         #   (rewards + gamma * vs[1]) minus the baseline of critic_values
         # - target for the critic, i.e., vs[0]
+        actor_loss_coefficient = rhos[0] * (
+            rewards[:, 0] + args.gamma * vs[1] - critic_values[:, 0]
+        )
+        critic_target = vs[0]
 
-        return actor_loss_coefficient, critic_target
+        return actor_loss_coefficient.squeeze(), critic_target
 
     @tf.function
     def train(self, steps, states, actions, action_probabilities, rewards):
@@ -198,7 +196,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--batch_size",
-        default=None,
+        default=128,
         type=int,
         help="Number of transitions to train on.",
     )
@@ -224,18 +222,18 @@ if __name__ == "__main__":
     parser.add_argument(
         "--evaluate_for", default=10, type=int, help="Evaluate for number of episodes."
     )
-    parser.add_argument("--gamma", default=None, type=float, help="Discounting factor.")
+    parser.add_argument("--gamma", default=0.99, type=float, help="Discounting factor.")
     parser.add_argument(
-        "--hidden_layer", default=None, type=int, help="Size of hidden layer."
+        "--hidden_layer", default=256, type=int, help="Size of hidden layer."
     )
     parser.add_argument(
-        "--learning_rate", default=None, type=float, help="Learning rate."
+        "--learning_rate", default=0.001, type=float, help="Learning rate."
     )
     parser.add_argument(
-        "--n", default=None, type=int, help="Number of steps to use in V-trace."
+        "--n", default=5, type=int, help="Number of steps to use in V-trace."
     )
     parser.add_argument(
-        "--replay_buffer_maxlen", default=None, type=int, help="Replay buffer maxlen."
+        "--replay_buffer_maxlen", default=int(1e6), type=int, help="Replay buffer maxlen."
     )
     parser.add_argument(
         "--render_each", default=0, type=int, help="Render some episodes."
@@ -311,6 +309,28 @@ if __name__ == "__main__":
                     rewards = np.zeros((args.batch_size, args.n), dtype=np.float32)
 
                     # TODO: Prepare a batch.
+                    batch = np.random.choice(
+                        len(replay_buffer), size=args.batch_size, replace=False
+                    )
+                    batch = batch[: -args.n]
+
+                    states, actions, action_probabilities, rewards, dones = zip(
+                        *[replay_buffer[i] for i in batch]
+                    )
+                    steps = [
+                        args.n + 1 if not done else len(state)
+                        for done, state in zip(dones, states)
+                    ]
+                    states = []
+                    predicted = network.predict_values(next_states)
+                    returns = rewards + args.gamma * np.array(
+                        [
+                            (predicted[idx] if not dones[idx] else 0)
+                            for idx in range(args.batch_size)
+                        ]
+                    )
+                    network.train(states, actions, returns)
+
                     #
                     # Each batch instance is a sequence of `args.n+1` consecutive `states` and
                     # `args.n` consecutive `actions`, `action_probabilities` and `rewards`.
