@@ -7,12 +7,6 @@ import tensorflow as tf
 import gym_evaluator
 
 
-def sparse_categorical_crossentropy(y_true, y_pred):
-    crossentropy = tf.keras.losses.sparse_categorical_crossentropy(y_true, y_pred)
-    entropy_regularization = tf.reduce_sum(-y_pred * tf.math.log(y_pred), axis=-1)
-    return crossentropy + entropy_regularization
-
-
 class Network:
     def __init__(self, env, args):
         # Store the arguments regularization
@@ -41,11 +35,9 @@ class Network:
             inputs=[inputs_actor], outputs=[output_actor]
         )
 
-        self._actor_loss = sparse_categorical_crossentropy
-
         self._actor.compile(
             optimizer=tf.keras.optimizers.Adam(learning_rate=args.learning_rate),
-            loss=self._actor_loss,
+            loss=tf.keras.losses.SparseCategoricalCrossentropy(),
             experimental_run_tf_function=False,
         )
 
@@ -92,11 +84,16 @@ class Network:
         # TODO: Compute target policy probability of given actions
         # into `actor_action_probabilities`, i.e., symbolically
         #   actor_action_probabilities = actor_probabilities[:, :, actions[:, :]]
-        actions_oh = np.eye(actions.max() + 1)[actions].astype(np.bool)
-        actor_action_probabilities = actor_probabilities[actions_oh].reshape(
-            actions.shape
-        )
-
+        # actions_oh = np.eye(actions.max() + 1)[actions].astype(np.bool)
+        # assert actor_probabilities.shape == actions_oh.shape
+        # actor_action_probabilities = tf.reshape(
+        #     actor_probabilities[actions_oh], actions.shape
+        # )
+        actor_action_probabilities = np.zeros_like(actions, dtype=np.float32)
+        for i in range(actions.shape[0]):
+            for j in range(actions.shape[1]):
+                action = actions[i, j]
+                actor_action_probabilities[i, j] = actor_probabilities[i, j, action]
         is_ratio = actor_action_probabilities / action_probabilities
 
         # is_ratio = is_ratio[:, actions]
@@ -149,8 +146,10 @@ class Network:
         # if all `states` are non-terminal), so the critic predictions for the
         # states after the `steps` ones must be set to zero.
         critic_values = critic_values.numpy()
-
-        critic_values[steps:] = [0.0]
+        for i, step in zip(range(critic_values.shape[0]), steps):
+            if step == args.n + 1:
+                continue
+            critic_values[i, np.array(list(range(args.n + 1))) >= step] = [0.0]
 
         # TODO: Run the `vtrace` method, with the last two arguments being the actor
         # and critic predictions, obtaining `actor_weights` and `critic_targets`.
@@ -167,8 +166,10 @@ class Network:
         # TODO obtain the first state of every batch instance
         states_train = states[0, :]
 
-        self._actor.fit_on_batch(
-            X=states_train, y=critic_targets, sample_weight=actor_weights
+        states_train = states[:, 0, :]
+        states_train = states_train[:, np.newaxis, :]
+        self._actor.train_on_batch(
+            states_train, critic_targets.reshape(-1, 1), actor_weights
         )
 
         # TODO: Train the actor, using the first state of every batch instance, with
@@ -333,10 +334,10 @@ if __name__ == "__main__":
                         action_probabilities[:, n] = action_probabilities_batch
                         rewards[:, n] = rewards_batch
 
-                    try:
-                        steps[n] = list(dones_batch).index(True)
-                    except:
-                        steps[n] = args.n + 1
+                        try:
+                            steps[n] = list(dones_batch).index(True)
+                        except:
+                            steps[n] = args.n + 1
 
                     network.train(steps, states, actions, action_probabilities, rewards)
 
