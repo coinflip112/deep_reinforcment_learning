@@ -31,9 +31,7 @@ class Network:
         # We train the actor using sparse categorical crossentropy loss
         # and Adam optimizer with args.learning_rate.
 
-        self._actor = tf.keras.models.Model(
-            inputs=[inputs_actor], outputs=[output_actor]
-        )
+        self._actor = tf.keras.models.Model(inputs=inputs_actor, outputs=output_actor)
 
         self._actor.compile(
             optimizer=tf.keras.optimizers.Adam(learning_rate=args.learning_rate),
@@ -48,7 +46,7 @@ class Network:
         output_critic = tf.keras.layers.Dense(1, activation=None)(hidden_critic)
 
         self._critic = tf.keras.models.Model(
-            inputs=[inputs_critic], outputs=output_critic
+            inputs=inputs_critic, outputs=output_critic
         )
         self._critic.compile(
             loss="mse",
@@ -160,17 +158,12 @@ class Network:
             action_probabilities,
             rewards,
             actor_probabilities,
-            critic_values,
+            critic_values.squeeze(),
         )
 
         # TODO obtain the first state of every batch instance
-        states_train = states[0, :]
-
         states_train = states[:, 0, :]
         states_train = states_train[:, np.newaxis, :]
-        self._actor.train_on_batch(
-            states_train, critic_targets.reshape(-1, 1), actor_weights
-        )
 
         # TODO: Train the actor, using the first state of every batch instance, with
         # - sparse categorical crossentropy loss, weighted by `actor_weights`
@@ -178,8 +171,11 @@ class Network:
         #   Entropy of a given categorical distribution `d` is
         #     tf.reduce_sum(-d * tf.math.log(d), axis=-1)
 
+        self._actor.train_on_batch(states_train, actions[:, 0], actor_weights)
+
         # TODO: Train the critic using the first state of every batch instance,
         # utilizing MSE loss with `critic_targets` as gold values.
+        self._critic.train_on_batch(states_train, critic_targets)
 
     @tf.function
     def _predict_actions(self, states):
@@ -322,22 +318,22 @@ if __name__ == "__main__":
                     # action_probabilities and rewards are set, and `steps` is set to the
                     # number of valid states (<`args.n+1`).
 
-                    for n in range(args.n):
-                        batch = np.random.choice(
-                            len(replay_buffer), size=args.batch_size, replace=False
-                        )
-                        states_batch, actions_batch, action_probabilities_batch, rewards_batch, dones_batch = zip(
-                            *[replay_buffer[i] for i in batch]
-                        )
-                        states[:, n, :] = states_batch
-                        actions[:, n] = actions_batch
-                        action_probabilities[:, n] = action_probabilities_batch
-                        rewards[:, n] = rewards_batch
-
-                        try:
-                            steps[n] = list(dones_batch).index(True)
-                        except:
-                            steps[n] = args.n + 1
+                    batch = np.random.choice(
+                        len(replay_buffer) - args.n, size=args.batch_size, replace=False
+                    )
+                    for i in range(args.batch_size):
+                        for j in range(args.n):
+                            item = replay_buffer[batch[i] + j]
+                            states[i, j] = item.state
+                            actions[i, j] = item.action
+                            action_probabilities[i, j] = item.action_probability
+                            rewards[i, j] = item.reward
+                            if item.done:
+                                steps[i] = j + 1
+                                break
+                        else:
+                            steps[i] = args.n + 1
+                            states[i, args.n] = replay_buffer[batch[i] + args.n].state
 
                     network.train(steps, states, actions, action_probabilities, rewards)
 
