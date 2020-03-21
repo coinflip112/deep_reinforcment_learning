@@ -6,6 +6,12 @@ __pycache__/
 # C extensions
 *.so
 
+#VSCODE
+.vscode/
+
+#mpl outputs
+*pyx
+
 # Distribution / packaging
 .Python
 build/
@@ -102,3 +108,6 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+
+#PDF files
+*.pdf
